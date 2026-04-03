@@ -1,1 +1,4 @@
 fonttools>=4.0.0
+playwright>=1.40.0
+pymupdf>=1.24.0
+Pillow>=10.0.0
