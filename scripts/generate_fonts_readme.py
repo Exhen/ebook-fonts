@@ -3,8 +3,7 @@
 """
 遍历仓库内所有 .ttf 与 font_previews/*.png，生成 Markdown。
 
-预览图使用相对 README 文件的路径嵌入（`![]()`），便于在 GitHub 与本地直接显示；若可解析 git
-remote，则另行附上 raw.githubusercontent.com 直链。
+预览图使用相对 README 的路径嵌入（`![]()`）；「点击下载」指向对应 **.ttf** 的 raw 直链（非预览 PNG）。
 
 用法:
   python scripts/generate_fonts_readme.py
@@ -199,8 +198,8 @@ def main() -> None:
             lines.append(f"![{alt}]({img_url})")
             lines.append("")
             if raw_base:
-                rel_png = ppath.resolve().relative_to(repo_root)
-                raw_url = f"{raw_base}/{encode_repo_rel_path(rel_png)}"
+                rel_ttf = fp.resolve().relative_to(repo_root)
+                raw_url = f"{raw_base}/{encode_repo_rel_path(rel_ttf)}"
                 lines.append(f"Raw：[点击下载]({raw_url})")
                 lines.append("")
                 lines.append("---")
@@ -220,17 +219,13 @@ def main() -> None:
         lines.append("## 未匹配到字体的预览文件")
         lines.append("")
         for p in sorted(orphans, key=lambda x: x.name.lower()):
-            rel_png = p.resolve().relative_to(repo_root)
             img_u = markdown_asset_url(out_path, p)
             alt = p.stem.replace('"', "'")
             lines.append(f"### `{p.name}`")
             lines.append("")
             lines.append(f"![{alt}]({img_u})")
             lines.append("")
-            if raw_base:
-                raw_url = f"{raw_base}/{encode_repo_rel_path(rel_png)}"
-                lines.append(f"Raw：[点击下载]({raw_url})")
-                lines.append("")
+            lines.append("*（无对应 TTF 匹配，故不提供字体下载链）*")
             lines.append("")
 
     if missing_preview:
@@ -241,6 +236,9 @@ def main() -> None:
         for fp in missing_preview:
             rel = fp.resolve().relative_to(root)
             lines.append(f"- `{rel.as_posix()}`")
+            if raw_base:
+                raw_ttf = f"{raw_base}/{encode_repo_rel_path(rel)}"
+                lines.append(f"  - [点击下载]({raw_ttf})")
         lines.append("")
 
     out_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
