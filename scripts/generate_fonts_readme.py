@@ -4,8 +4,8 @@
 遍历仓库内所有 .ttf 与 font_previews/*.png，生成 Markdown。
 
 - 按**同一出版方**分组（路径首段为出版方目录），每组一个 `##` 标题。
-- 组内用 **HTML `<table>`**（`table-layout: fixed` + 列宽与预览图宽度一致）横向排布：
-  第一行为字体名链接，第二行为固定尺寸的预览图（与
+- 组内用 **HTML `<table>`**（`table-layout: fixed` + 列宽与预览图宽度一致）：每表最多 **3 列**，
+  字体较多时拆成多个表上下排列；第一行为下载链接，第二行为固定尺寸预览图（与
   `render_font_previews_html.py` 的 PNG 命名一致：主文件名 `.png`，冲突为 `_2` 等）。
 - 文首第一段列出**全部出版方**的目录链接，跳转到对应 `##` 小节（HTML 锚点）。
 - 「点击下载」链接：有 `--raw-base` 时用 raw 直链，否则用相对仓库路径。
@@ -250,6 +250,27 @@ def emit_two_row_html_table_fixed_cells(
     lines.append("")
 
 
+def emit_chunked_two_row_tables(
+    lines: list[str],
+    link_cells: list[str],
+    img_cells: list[str],
+    *,
+    cell_width_px: int,
+    max_cols: int,
+) -> None:
+    """每段最多 max_cols 列，多出的字体拆成多个两行表依次输出。"""
+    if not link_cells:
+        return
+    n = max(1, min(24, int(max_cols)))
+    for i in range(0, len(link_cells), n):
+        emit_two_row_html_table_fixed_cells(
+            lines,
+            link_cells[i : i + n],
+            img_cells[i : i + n],
+            cell_width_px=cell_width_px,
+        )
+
+
 def emit_font_table(
     lines: list[str],
     fonts_in_group: list[Path],
@@ -262,8 +283,9 @@ def emit_font_table(
     img_width: int,
     img_height: int | None,
     cell_width_px: int,
+    max_cols_per_row: int,
 ) -> None:
-    """同一出版方下：一行链接、一行预览图（固定列宽 HTML 表）。"""
+    """同一出版方下：多段两行表，每段最多 max_cols_per_row 列。"""
     fonts_in_group = sorted(fonts_in_group, key=lambda p: p.name.lower())
     link_cells: list[str] = []
     img_cells: list[str] = []
@@ -283,11 +305,12 @@ def emit_font_table(
                 image_cell(None, "", img_width=img_width, img_height=img_height)
             )
 
-    emit_two_row_html_table_fixed_cells(
+    emit_chunked_two_row_tables(
         lines,
         link_cells,
         img_cells,
         cell_width_px=cell_width_px,
+        max_cols=max_cols_per_row,
     )
 
 
@@ -347,11 +370,19 @@ def main() -> None:
         metavar="PX",
         help="表格列宽（像素）；0 表示与预览图宽相同；若指定值小于图宽会自动按图宽取整",
     )
+    parser.add_argument(
+        "--preview-table-cols",
+        type=int,
+        default=3,
+        metavar="N",
+        help="每个预览表最多列数（默认：3；超出则拆成多个表纵向排列）",
+    )
     args = parser.parse_args()
     img_w = max(16, args.preview_img_width)
     img_h: int | None = None if args.preview_img_height <= 0 else max(16, args.preview_img_height)
     base_cell = img_w if args.table_cell_width <= 0 else max(16, args.table_cell_width)
     cell_w = max(base_cell, img_w)
+    table_cols = max(1, min(24, args.preview_table_cols))
 
     root = args.root.resolve()
     prev_dir = args.previews.resolve()
@@ -414,6 +445,7 @@ def main() -> None:
             img_width=img_w,
             img_height=img_h,
             cell_width_px=cell_w,
+            max_cols_per_row=table_cols,
         )
 
     for fp in fonts:
@@ -441,11 +473,12 @@ def main() -> None:
                     height=img_h,
                 )
             )
-        emit_two_row_html_table_fixed_cells(
+        emit_chunked_two_row_tables(
             lines,
             link_cells_o,
             img_cells_o,
             cell_width_px=cell_w,
+            max_cols=table_cols,
         )
         lines.append("*（无对应 TTF 匹配，故不提供字体下载链）*")
         lines.append("")
