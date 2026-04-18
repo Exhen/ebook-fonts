@@ -10,8 +10,11 @@
 通过 PyMuPDF 的 Story（MuPDF HTML/CSS 子集）排版并写入 PDF，再按页光栅化后垂直拼接；
 不依赖 Playwright 或其它浏览器自动化。每次运行会先清空 `--out` 目录内已有文件与子目录。
 
+若字体经 cmap 推断为**仅适合繁体正文**（与 rename 脚本一致的「繁体」判定），则将 HTML 模板中
+标签外的正文用 **zhconv** 转为台湾繁体后再渲染，避免缺简体字形时显示异常。
+
 依赖：
-  pip install pymupdf Pillow
+  pip install pymupdf Pillow fonttools zhconv
 
 用法:
   python scripts/render_font_previews_html.py
@@ -22,10 +25,12 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import io
 import re
 import shutil
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 try:
@@ -39,6 +44,77 @@ try:
 except ImportError:
     print("请先安装: pip install Pillow", file=sys.stderr)
     sys.exit(1)
+
+try:
+    import zhconv
+except ImportError:
+    zhconv = None  # type: ignore
+
+try:
+    from fontTools.ttLib import TTFont
+except ImportError:
+    print("请先安装: pip install fonttools", file=sys.stderr)
+    sys.exit(1)
+
+def _load_classify_han_variant():
+    """与 rename_ttf_by_fontname 相同的简繁 cmap 判定。"""
+    rename_py = Path(__file__).resolve().parent / "rename_ttf_by_fontname.py"
+    spec = importlib.util.spec_from_file_location("_font_rename_rules", rename_py)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"无法加载: {rename_py}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.classify_han_variant
+
+
+_classify_han_variant = _load_classify_han_variant()
+
+
+def convert_html_text_outside_tags(html: str, convert_chunk: Callable[[str], str]) -> str:
+    """只转换尖括号外的文本，保留标签与属性不变。"""
+    parts: list[str] = []
+    i = 0
+    n = len(html)
+    while i < n:
+        if html[i] != "<":
+            j = html.find("<", i)
+            if j == -1:
+                parts.append(convert_chunk(html[i:]))
+                break
+            if j > i:
+                parts.append(convert_chunk(html[i:j]))
+            i = j
+            continue
+        j = html.find(">", i)
+        if j == -1:
+            parts.append(html[i:])
+            break
+        parts.append(html[i : j + 1])
+        i = j + 1
+    return "".join(parts)
+
+
+def template_for_font_variant(template: str, font_path: Path) -> str:
+    """
+    繁体向字体：将模板正文转为 zh-tw，其余变体沿用简体模板。
+    """
+    try:
+        with TTFont(font_path, fontNumber=0) as tt:
+            variant = _classify_han_variant(tt)
+    except Exception:
+        return template
+    if variant != "繁体":
+        return template
+    if zhconv is None:
+        print(
+            f"提示: 字体为繁体向但未安装 zhconv，预览仍用简体模板: {font_path.name}",
+            file=sys.stderr,
+        )
+        return template
+    return convert_html_text_outside_tags(
+        template, lambda s: zhconv.convert(s, "zh-tw")
+    )
+
 
 INVALID_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
@@ -348,7 +424,8 @@ def main() -> None:
     for i, font_path in enumerate(fonts):
         rel = font_path.resolve().relative_to(root)
         family = f"__PreviewFont_{i}"
-        doc_html = build_preview_html(template, family, rel.as_posix(), eink=eink)
+        tmpl = template_for_font_variant(template, font_path)
+        doc_html = build_preview_html(tmpl, family, rel.as_posix(), eink=eink)
         try:
             pdf_bytes = story_to_pdf_bytes(doc_html, archive, page_rect, args.inset_pt)
         except Exception as e:
