@@ -4,10 +4,12 @@
 遍历仓库内所有 .ttf 与 font_previews/*.png，生成 Markdown。
 
 - 按**同一出版方**分组（路径首段为出版方目录），每组一个 `##` 标题。
-- 组内用**表格**横向排布：第一行为字体名链接，第二行为预览图（与
+- 组内用 **HTML `<table>`**（`table-layout: fixed` + 列宽与预览图宽度一致）横向排布：
+  第一行为字体名链接，第二行为固定尺寸的预览图（与
   `render_font_previews_html.py` 的 PNG 命名一致：主文件名 `.png`，冲突为 `_2` 等）。
 - 文首第一段列出**全部出版方**的目录链接，跳转到对应 `##` 小节（HTML 锚点）。
 - 「点击下载」链接：有 `--raw-base` 时用 raw 直链，否则用相对仓库路径。
+- 预览图使用 HTML `<img width height>` **固定显示尺寸**；表格列宽与图宽一致，避免单元格被撑开导致缩放异常。
 
 用法:
   python scripts/generate_fonts_readme.py
@@ -18,6 +20,7 @@
 from __future__ import annotations
 
 import argparse
+import html
 import re
 import subprocess
 import sys
@@ -157,6 +160,24 @@ def md_table_cell(text: str) -> str:
     return text.replace("|", "\\|").replace("\n", " ").strip()
 
 
+def preview_image_html(
+    img_url: str,
+    alt: str,
+    *,
+    width: int,
+    height: int | None,
+) -> str:
+    """表格单元格内嵌的固定尺寸预览图（HTML，便于 GitHub 控制宽高）。"""
+    src = html.escape(img_url, quote=True)
+    safe_alt = html.escape(alt.replace("\n", " ").strip() or "preview", quote=True)
+    if height is not None and height > 0:
+        return (
+            f'<img src="{src}" width="{int(width)}" height="{int(height)}" '
+            f'alt="{safe_alt}" />'
+        )
+    return f'<img src="{src}" width="{int(width)}" alt="{safe_alt}" />'
+
+
 def font_link_cell(
     readme_out: Path,
     font_path: Path,
@@ -164,20 +185,69 @@ def font_link_cell(
     raw_base: str,
     display: str,
 ) -> str:
+    """
+    表格首行单元格内的下载链接。须为 HTML `<a>`：GFM 在原始 `<table>` 内
+    不会把 `[text](url)` 当作 Markdown 解析。
+    """
     rel_ttf = font_path.resolve().relative_to(root)
     if raw_base:
         url = f"{raw_base.rstrip('/')}/{encode_repo_rel_path(rel_ttf)}"
     else:
         url = markdown_asset_url(readme_out, font_path)
-    safe_disp = md_table_cell(display)
-    return f"[{safe_disp}]({url})"
+    safe_href = html.escape(url, quote=True)
+    label = display.replace("\n", " ").strip() or font_path.stem
+    safe_label = html.escape(label, quote=False)
+    return f'<a href="{safe_href}">{safe_label}</a>'
 
 
-def image_cell(img_url: str | None, alt: str) -> str:
+def image_cell(
+    img_url: str | None,
+    alt: str,
+    *,
+    img_width: int,
+    img_height: int | None,
+) -> str:
     if not img_url:
         return md_table_cell("*（尚无预览图）*")
-    safe_alt = md_table_cell(alt.replace('"', "'"))
-    return f"![{safe_alt}]({img_url})"
+    return preview_image_html(
+        img_url,
+        alt.replace('"', "'").replace("]", "").replace("[", ""),
+        width=img_width,
+        height=img_height,
+    )
+
+
+def emit_two_row_html_table_fixed_cells(
+    lines: list[str],
+    top_row: list[str],
+    bottom_row: list[str],
+    *,
+    cell_width_px: int,
+) -> None:
+    """
+    两行 HTML 表格：每列固定宽度（与预览图宽一致），table-layout:fixed 防止列被内容撑开。
+    """
+    if not top_row or len(top_row) != len(bottom_row):
+        return
+    w = int(cell_width_px)
+    td_style = (
+        f'width:{w}px;max-width:{w}px;min-width:{w}px;'
+        f"vertical-align:top;word-wrap:break-word;box-sizing:border-box;"
+    )
+    lines.append(
+        '<table style="table-layout:fixed;border-collapse:collapse;width:auto;">'
+    )
+    lines.append("<tbody>")
+    for row in (top_row, bottom_row):
+        lines.append("<tr>")
+        for cell in row:
+            lines.append(
+                f'  <td width="{w}" style="{td_style}">{cell}</td>'
+            )
+        lines.append("</tr>")
+    lines.append("</tbody>")
+    lines.append("</table>")
+    lines.append("")
 
 
 def emit_font_table(
@@ -189,8 +259,11 @@ def emit_font_table(
     raw_base: str,
     preview_by_name: dict[str, Path],
     missing_preview: list[Path],
+    img_width: int,
+    img_height: int | None,
+    cell_width_px: int,
 ) -> None:
-    """同一出版方下：一行链接、一行预览图。"""
+    """同一出版方下：一行链接、一行预览图（固定列宽 HTML 表）。"""
     fonts_in_group = sorted(fonts_in_group, key=lambda p: p.name.lower())
     link_cells: list[str] = []
     img_cells: list[str] = []
@@ -201,16 +274,21 @@ def emit_font_table(
         if ppath:
             alt = fp.stem.replace('"', "'").replace("]", "").replace("[", "")
             img_url = markdown_asset_url(readme_out, ppath)
-            img_cells.append(image_cell(img_url, alt))
+            img_cells.append(
+                image_cell(img_url, alt, img_width=img_width, img_height=img_height)
+            )
         else:
             missing_preview.append(fp)
-            img_cells.append(image_cell(None, ""))
+            img_cells.append(
+                image_cell(None, "", img_width=img_width, img_height=img_height)
+            )
 
-    n = len(link_cells)
-    lines.append("| " + " | ".join(link_cells) + " |")
-    lines.append("| " + " | ".join(["---"] * n) + " |")
-    lines.append("| " + " | ".join(img_cells) + " |")
-    lines.append("")
+    emit_two_row_html_table_fixed_cells(
+        lines,
+        link_cells,
+        img_cells,
+        cell_width_px=cell_width_px,
+    )
 
 
 def main() -> None:
@@ -248,7 +326,32 @@ def main() -> None:
         default=None,
         help="与 --raw-base 二选一：仅提供分支名时与 git remote 拼成 raw 地址（默认取当前分支）",
     )
+    parser.add_argument(
+        "--preview-img-width",
+        type=int,
+        default=240,
+        metavar="PX",
+        help="README 内预览图显示宽度（像素，默认：240）",
+    )
+    parser.add_argument(
+        "--preview-img-height",
+        type=int,
+        default=320,
+        metavar="PX",
+        help="预览图显示高度（像素，默认：320；设为 0 则只写 width，由浏览器按比例缩放）",
+    )
+    parser.add_argument(
+        "--table-cell-width",
+        type=int,
+        default=0,
+        metavar="PX",
+        help="表格列宽（像素）；0 表示与预览图宽相同；若指定值小于图宽会自动按图宽取整",
+    )
     args = parser.parse_args()
+    img_w = max(16, args.preview_img_width)
+    img_h: int | None = None if args.preview_img_height <= 0 else max(16, args.preview_img_height)
+    base_cell = img_w if args.table_cell_width <= 0 else max(16, args.table_cell_width)
+    cell_w = max(base_cell, img_w)
 
     root = args.root.resolve()
     prev_dir = args.previews.resolve()
@@ -308,6 +411,9 @@ def main() -> None:
             raw_base=raw_base,
             preview_by_name=preview_by_name,
             missing_preview=missing_preview,
+            img_width=img_w,
+            img_height=img_h,
+            cell_width_px=cell_w,
         )
 
     for fp in fonts:
@@ -327,12 +433,20 @@ def main() -> None:
         for p in sorted(orphans, key=lambda x: x.name.lower()):
             img_u = markdown_asset_url(out_path, p)
             alt = p.stem.replace('"', "'")
-            img_cells_o.append(f"![{md_table_cell(alt)}]({img_u})")
-        n = len(link_cells_o)
-        lines.append("| " + " | ".join(link_cells_o) + " |")
-        lines.append("| " + " | ".join(["---"] * n) + " |")
-        lines.append("| " + " | ".join(img_cells_o) + " |")
-        lines.append("")
+            img_cells_o.append(
+                preview_image_html(
+                    img_u,
+                    alt,
+                    width=img_w,
+                    height=img_h,
+                )
+            )
+        emit_two_row_html_table_fixed_cells(
+            lines,
+            link_cells_o,
+            img_cells_o,
+            cell_width_px=cell_w,
+        )
         lines.append("*（无对应 TTF 匹配，故不提供字体下载链）*")
         lines.append("")
 
