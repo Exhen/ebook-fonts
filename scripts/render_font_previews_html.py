@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 使用 test.html 的版式与正文，为每个 .ttf 生成一张纵向拼接的多页渲染预览图（PNG）。
+输出 PNG 文件名与对应 TTF 的主文件名一致（如 foo.ttf → foo.png）；重名时自动加 _2、_3。
 
 默认做「接近 E-Ink」的效果：暖灰纸色、略偏冷的墨迹、灰阶量化后再映射到纸/墨双色；
 可用 --no-eink 恢复纯白底直出。
@@ -52,6 +53,24 @@ def sanitize_filename(name: str, max_len: int = 180) -> str:
         else:
             name = name[:max_len]
     return name
+
+
+def unique_preview_png_name(ttf_stem: str, used: set[str]) -> str:
+    """
+    与 TTF 主文件名同 stem 的 .png 名；已占用时在 stem 后加 _N（仍带 .png）。
+    """
+    first = sanitize_filename(f"{ttf_stem}.png")
+    if first not in used:
+        used.add(first)
+        return first
+    root = Path(first).stem
+    n = 2
+    while True:
+        cand = sanitize_filename(f"{root}_{n}.png")
+        if cand not in used:
+            used.add(cand)
+            return cand
+        n += 1
 
 
 def build_preview_html(
@@ -324,6 +343,7 @@ def main() -> None:
 
     archive = fitz.Archive(str(root))
     page_rect = fitz.Rect(0, 0, args.page_width_pt, args.page_height_pt)
+    used_png_names: set[str] = set()
 
     for i, font_path in enumerate(fonts):
         rel = font_path.resolve().relative_to(root)
@@ -334,8 +354,7 @@ def main() -> None:
         except Exception as e:
             print(f"跳过（Story 失败）{rel}: {e}", file=sys.stderr)
             continue
-        rel_stem = "__".join(rel.parts)
-        out_name = sanitize_filename(f"{Path(rel_stem).stem}.png")
+        out_name = unique_preview_png_name(font_path.stem, used_png_names)
         out_file = out_dir / out_name
         try:
             pdf_bytes_to_stitched_png(
